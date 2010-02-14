@@ -74,6 +74,10 @@ def process_mp3 (  mp3_file )
   
 end
 
+def prob_file ( p )
+  puts "ERR >> " + p
+  @problem_dirs.push p
+end
 
 def findmp3s ( f=nil )
 
@@ -84,7 +88,10 @@ def findmp3s ( f=nil )
   if p.directory?
     @dir_count += 1
     puts "dir: " + p
-    return if !p.readable?
+    if !p.readable?
+      prob_file p
+      return
+    end
     p.children.each { |file| 
       findmp3s file
     }
@@ -95,8 +102,7 @@ def findmp3s ( f=nil )
     # entitled /mnt/gizmo/mp3/Curtis/Poncho Sanchez?
     # and it barfs unless I try skipping it like this
     if !p.exist? || p.symlink?
-      puts "ERR >> " + p
-      @@problem_dirs.push p
+      prob_file p
       return
     end 
     
