@@ -7,114 +7,153 @@ require 'pathname'
 require 'find' 
 require 'fileutils' 
 require 'optparse'
+require 'yaml'
+require 'song'
 
+dbconfig = YAML::load(File.open('config/db.yml'))
+ActiveRecord::Base.establish_connection(dbconfig)
 
+=begin
+# changed as now using MySQL db
+# establish connection to sqlite3 disk db
 ActiveRecord::Base.establish_connection(
     :adapter => "sqlite",
     :database  => "db/development.sqlite3"
   )
-
-
-=begin
-  FIELD LIST IN 'SONGS' TABLE
-  artist:string 
-  album:string
-  title:string
-  track:integer
-  time:string
-  genre:string
 =end
-
-class Songs < ActiveRecord::Base  
-  
-  # TODO: some way to dynamically dump field list?
-  
-end
-
 
 
 class CurtisMP3Parser
 
-attr_accessor :mp3_count, :file_count, :dir_count, :problem_dirs
-
-def initialize
-  @mp3_count = 0
-  @file_count = 0 
-  @dir_count = 0
-  @problem_dirs = Array.new
-end
-
-def process_mp3 (  mp3_file )
-
-  #puts "hit: " + mp3_file
+  attr_accessor :mp3_count, :file_count, :dir_count, :skip_dirs
+  @options = {}
   
-=begin
-
-  # dumps ID3 tag info to screen. ultimately write to DB
-  tag = ID3Lib::Tag.new(mp3_file)
-  puts "track #: " + tag.track 
-  puts "title: " + tag.title
-  puts "album: " + tag.album
-  puts "artist: " + tag.artist
-  genreNumber =  tag.genre.scan(/\d+/) # parse as returns genre like "(17)", with '(' and ')'
-  puts "genre: " + ID3Lib::Info::Genres[genreNumber[0].to_i]
+  def initialize ( options )
   
-
-  # interesting detailed stuff comes form this  
-  puts "\ndumping frames"
-  tag.each do |frame|
-       p frame
-     end
-   
-  puts "\ndumping info on frame ID TALB"
-  puts ID3Lib::Info.frame(:TALB)
-=end
-
-  @mp3_count += 1
-  
-end
-
-def prob_file ( p )
-  puts "ERR >> " + p
-  @problem_dirs.push p
-end
-
-def findmp3s ( f=nil )
-
-  return if f.nil?
-  
-  p = Pathname(f)  
-  string_name = nil
-  if p.directory?
-    @dir_count += 1
-    puts "dir: " + p
-    if !p.readable?
-      prob_file p
-      return
-    end
-    p.children.each { |file| 
-      findmp3s file
-    }
-  else
-    @file_count +=1
+    @options = options
     
-    # there's a subdir in my mp3 folder
-    # entitled /mnt/gizmo/mp3/Curtis/Poncho Sanchez?
-    # and it barfs unless I try skipping it like this
-    if !p.exist? || p.symlink?
-      prob_file p
-      return
-    end 
-    
-    string_name = p.realpath.to_s
-    if !(string_name =~ /mp3$/)
-      #puts "miss: " + string_name
-    else
-      process_mp3 string_name
-    end
+    # these gather useful stats to print
+    # out when program complete
+    @mp3_count = 0
+    @file_count = 0 
+    @dir_count = 0
+    @skip_dirs = Array.new
+    @skip_files = Array.new
   end
   
-end
+  def process_mp3 (  mp3_file )
+      
+    tag = ID3Lib::Tag.new(mp3_file)
+    
+    if @options[:debug]
+      # full dump of mp3 frame info from tag
+      puts "\ndumping frames"
+      tag.each do |frame|
+           p frame
+         end
+    end
+  
+    # set vars to write to db
+    t_path = mp3_file
+    t_track = tag.track.nil? ? "" : tag.track
+    t_title = tag.title.nil? ? "" : tag.title
+    t_album = tag.album.nil? ? "" : tag.album
+    t_artist = tag.artist.nil? ? "" : tag.artist
+    t_genre = tag.genre.nil? ? "" : tag.genre
+    
+    # for some reason they thought it was a good idea 
+    # to return genre like "(17)", i.e. inside '(' and ')'
+    # parse out genre number
+    if !t_genre.empty?
+      genreNumber =  t_genre.scan(/\d+/) 
+      t_genre = ID3Lib::Info::Genres[genreNumber[0].to_i]
+    end
+    
+    if @options[:debug]
+      # debug dump ID3 tag info to display.
+      puts "track #: " + t_track 
+      puts "title: " + t_title
+      puts "album: " + t_album
+      puts "artist: " + t_artist
+      puts "genre: " + t_genre
+      puts "path: " + t_path
+    end
+    
+    if @options[:do_nothing]
+      puts "adding (not): " + mp3_file  if @options[:verbose]
+    else
+      puts "adding: " + mp3_file if @options[:verbose]
+      Song.create(:artist => t_artist, 
+        :album => t_album, 
+        :title => t_title, 
+        :track => t_track, 
+        :genre => t_genre,
+        :path => t_path)
+    end
+    
+    @mp3_count += 1
+    
+  end
+  
+  def skip_file ( f )
+    puts "ERR file >> " + f  if @options[:verbose]
+    @skip_files.push f
+  end
+  
+  def skip_dir ( d )
+    puts "ERR dir >> " + d if @options[:verbose]
+    @skip_dirs.push d
+  end
+  
+  def findmp3s ( f=nil )
+  
+    return if f.nil?
+    
+    p = Pathname(f)  
+    string_name = nil
+    if p.directory?
+      @dir_count += 1
+      if @options[:quiet]
+        print "."
+      else
+        puts "process dir: " + p 
+      end 
+      
+      if !p.readable?
+        skip_dir p
+        return
+      end
+      p.children.each { |file| 
+        findmp3s file
+      } if @options[:recursive]
+    else
+      @file_count +=1
+      
+      # there's a subdir in my mp3 folder
+      # entitled /mnt/gizmo/mp3/Curtis/Poncho Sanchez?
+      # and it barfs unless I try skipping it like this
+      if !p.exist? || p.symlink?
+        skip_file p
+        return
+      end 
+      
+      string_name = p.basename.to_s
+      if !(string_name =~ /^[^.].*mp3$/) 
+        skip_file p
+      else
+        process_mp3 p.realpath.to_s
+      end
+    end
+    
+  end
+  
+  def db_test
+    s = Song.find(:all)
+    s.each do  |song| 
+      puts "song name in DB: " + song.artist
+    end
+  
+  end
 
 
 end
@@ -140,39 +179,72 @@ optparse = OptionParser.new do|opts|
   opts.on( '-v', '--verbose', 'Output more information' ) do
     options[:verbose] = true
   end
-
-  options[:root_dir] = nil
-  opts.on( '-r', '--root', 'Root directory to search from.' ) do|file|
-    options[:root_dir] = file
+  
+  options[:recursive] = false
+  opts.on( '-r', '--recursive', 'Recursive directory search' ) do
+    options[:recursive] = true
   end
+  
+  options[:quiet] = false
+  opts.on( '-q', '--quiet', 'Output less information' ) do
+    options[:quiet] = true
+  end  
+  
+  options[:debug] = false
+  opts.on( '-d', '--debug', 'Output lots of debug information' ) do
+    options[:debug] = true
+  end  
+    
+  options[:do_nothing] = false
+  opts.on( '-n', '--nothing', 'No changes to DB, print out what would be added.' ) do
+    options[:do_nothing] = true
+  end
+
 
   # displays the help screen, all programs assumed to have this option.
   opts.on( '-h', '--help', 'Display this screen' ) do
     puts opts
     exit
   end
+  
+  # displays the help screen, all programs assumed to have this option.
+  options[:test] = false
+  opts.on( '-t', '--test', 'pull first record from DB' ) do
+    options[:test] = true
+  end
+
+
 end
 
 optparse.parse!
 
+p = CurtisMP3Parser.new(options)
 
-if options[:root_dir].nil? || options[:help]
-  puts optparse
+if options[:test] 
+  p.db_test
   return
+end  
+
+
+if ARGV.empty? || options[:help]
+  puts optparse
 else
   puts "Being verbose" if options[:verbose]
 
-  p = CurtisMP3Parser.new    
+
+    
   ARGV.each do|f|
+    STDOUT.sync = true #forces no caching of 'print' statements.
     puts "Searching for mp3s in #{f}..."
     p.findmp3s f  # this kicks off the work 
   end
   
   puts "total dir(s) : " + p.dir_count.to_s
+  puts "skipped dir(s) : " + p.skip_dirs.size.to_s
   puts "total file(s) : " + p.file_count.to_s
   puts "total mp3 file(s) : " + p.mp3_count.to_s
-  puts "total non mp3 file(s) : " + (p.file_count - p.mp3_count).to_s
-  if !p.problem_dirs.empty?
+  puts "skipped file(s) : " + (p.file_count - p.mp3_count).to_s
+  if p.skip_dirs.size > 0
     puts "problem dir(s) .."
     p.problem_dirs.each { |path| puts "path : #{path}" }
   end
