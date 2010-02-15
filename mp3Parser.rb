@@ -10,6 +10,17 @@ require 'optparse'
 require 'yaml'
 require 'song'
 
+
+=begin
+ connection to DB expects the file "config/db.yml"
+ to contain the following info:
+    adapter: mysql
+    host: localhost
+    username: <user>
+    password: <passwd>
+    database: mp3_parser
+=end
+
 dbconfig = YAML::load(File.open('config/db.yml'))
 ActiveRecord::Base.establish_connection(dbconfig)
 
