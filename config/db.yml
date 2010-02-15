@@ -1,5 +1,0 @@
-adapter: mysql
-host: localhost
-username: root
-password: SpideR
-database: mp3_parser
